@@ -1,0 +1,217 @@
+<!DOCTYPE html><html lang="en" data-theme="light"><head><meta charset="UTF-8"><meta http-equiv="X-UA-Compatible" content="IE=edge"><meta name="viewport" content="width=device-width, initial-scale=1.0,viewport-fit=cover"><title>MySql与Redis双写一致性方案 | YoungDev</title><meta name="author" content="Young"><meta name="copyright" content="Young"><meta name="format-detection" content="telephone=no"><meta name="theme-color" content="#ffffff"><meta name="description" content="背景在实际开发中，经常需要使用redis做cache，提高读性能。而引入缓存后，需要注意缓存与数据库一致性的问题。   CacheAside 旁路缓存  Redis 和 Mysql 数据发生不一致的本质： 更新数据，设计到两个代码操作：  更新数据库 更新Redis  发生不一致的本质：这两个操作不是原子性的，因此在并发下，多线程的执行顺序导致数据库不一致。 如： 为什么要先更新数据库，在更新缓存">
+<meta property="og:type" content="article">
+<meta property="og:title" content="MySql与Redis双写一致性方案">
+<meta property="og:url" content="https://sfgyoung.github.io/2025/10/21/%E6%95%B0%E6%8D%AE%E5%BA%93%E4%B8%8E%E7%BC%93%E5%AD%98%E4%B8%80%E8%87%B4%E6%80%A7%E6%96%B9%E6%A1%88/index.html">
+<meta property="og:site_name" content="YoungDev">
+<meta property="og:description" content="背景在实际开发中，经常需要使用redis做cache，提高读性能。而引入缓存后，需要注意缓存与数据库一致性的问题。   CacheAside 旁路缓存  Redis 和 Mysql 数据发生不一致的本质： 更新数据，设计到两个代码操作：  更新数据库 更新Redis  发生不一致的本质：这两个操作不是原子性的，因此在并发下，多线程的执行顺序导致数据库不一致。 如： 为什么要先更新数据库，在更新缓存">
+<meta property="og:locale" content="en_US">
+<meta property="og:image" content="https://sfgyoung.github.io/img/dog1.png">
+<meta property="article:published_time" content="2025-10-21T08:23:11.117Z">
+<meta property="article:modified_time" content="2025-10-22T05:19:06.548Z">
+<meta property="article:author" content="Young">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:image" content="https://sfgyoung.github.io/img/dog1.png"><script type="application/ld+json">{
+  "@context": "https://schema.org",
+  "@type": "BlogPosting",
+  "headline": "MySql与Redis双写一致性方案",
+  "url": "https://sfgyoung.github.io/2025/10/21/%E6%95%B0%E6%8D%AE%E5%BA%93%E4%B8%8E%E7%BC%93%E5%AD%98%E4%B8%80%E8%87%B4%E6%80%A7%E6%96%B9%E6%A1%88/",
+  "image": "https://sfgyoung.github.io/img/dog1.png",
+  "datePublished": "2025-10-21T08:23:11.117Z",
+  "dateModified": "2025-10-22T05:19:06.548Z",
+  "author": [
+    {
+      "@type": "Person",
+      "name": "Young",
+      "url": "https://SfGyoung.github.io"
+    }
+  ]
+}</script><link rel="shortcut icon" href="/img/favicon.png"><link rel="canonical" href="https://sfgyoung.github.io/2025/10/21/%E6%95%B0%E6%8D%AE%E5%BA%93%E4%B8%8E%E7%BC%93%E5%AD%98%E4%B8%80%E8%87%B4%E6%80%A7%E6%96%B9%E6%A1%88/index.html"><link rel="preconnect" href="//cdn.jsdelivr.net"/><link rel="preconnect" href="//busuanzi.ibruce.info"/><link rel="stylesheet" href="/css/index.css?v=5.5.1"><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@7.1.0/css/all.min.css"><script>
+    (() => {
+      
+    const saveToLocal = {
+      set: (key, value, ttl) => {
+        if (!ttl) return
+        const expiry = Date.now() + ttl * 86400000
+        localStorage.setItem(key, JSON.stringify({ value, expiry }))
+      },
+      get: key => {
+        const itemStr = localStorage.getItem(key)
+        if (!itemStr) return undefined
+        const { value, expiry } = JSON.parse(itemStr)
+        if (Date.now() > expiry) {
+          localStorage.removeItem(key)
+          return undefined
+        }
+        return value
+      }
+    }
+
+    window.btf = {
+      saveToLocal,
+      getScript: (url, attr = {}) => new Promise((resolve, reject) => {
+        const script = document.createElement('script')
+        script.src = url
+        script.async = true
+        Object.entries(attr).forEach(([key, val]) => script.setAttribute(key, val))
+        script.onload = script.onreadystatechange = () => {
+          if (!script.readyState || /loaded|complete/.test(script.readyState)) resolve()
+        }
+        script.onerror = reject
+        document.head.appendChild(script)
+      }),
+      getCSS: (url, id) => new Promise((resolve, reject) => {
+        const link = document.createElement('link')
+        link.rel = 'stylesheet'
+        link.href = url
+        if (id) link.id = id
+        link.onload = link.onreadystatechange = () => {
+          if (!link.readyState || /loaded|complete/.test(link.readyState)) resolve()
+        }
+        link.onerror = reject
+        document.head.appendChild(link)
+      }),
+      addGlobalFn: (key, fn, name = false, parent = window) => {
+        if (!false && key.startsWith('pjax')) return
+        const globalFn = parent.globalFn || {}
+        globalFn[key] = globalFn[key] || {}
+        globalFn[key][name || Object.keys(globalFn[key]).length] = fn
+        parent.globalFn = globalFn
+      }
+    }
+  
+      
+      const activateDarkMode = () => {
+        document.documentElement.setAttribute('data-theme', 'dark')
+        if (document.querySelector('meta[name="theme-color"]') !== null) {
+          document.querySelector('meta[name="theme-color"]').setAttribute('content', '#0d0d0d')
+        }
+      }
+      const activateLightMode = () => {
+        document.documentElement.setAttribute('data-theme', 'light')
+        if (document.querySelector('meta[name="theme-color"]') !== null) {
+          document.querySelector('meta[name="theme-color"]').setAttribute('content', '#ffffff')
+        }
+      }
+
+      btf.activateDarkMode = activateDarkMode
+      btf.activateLightMode = activateLightMode
+
+      const theme = saveToLocal.get('theme')
+    
+          theme === 'dark' ? activateDarkMode() : theme === 'light' ? activateLightMode() : null
+        
+      
+      const asideStatus = saveToLocal.get('aside-status')
+      if (asideStatus !== undefined) {
+        document.documentElement.classList.toggle('hide-aside', asideStatus === 'hide')
+      }
+    
+      
+    const detectApple = () => {
+      if (/iPad|iPhone|iPod|Macintosh/.test(navigator.userAgent)) {
+        document.documentElement.classList.add('apple')
+      }
+    }
+    detectApple()
+  
+    })()
+  </script><script>const GLOBAL_CONFIG = {
+  root: '/',
+  algolia: undefined,
+  localSearch: undefined,
+  translate: undefined,
+  highlight: {"plugin":"highlight.js","highlightCopy":true,"highlightLang":true,"highlightHeightLimit":false,"highlightFullpage":false,"highlightMacStyle":false},
+  copy: {
+    success: 'Copy Successful',
+    error: 'Copy Failed',
+    noSupport: 'Browser Not Supported'
+  },
+  relativeDate: {
+    homepage: false,
+    post: false
+  },
+  runtime: '',
+  dateSuffix: {
+    just: 'Just now',
+    min: 'minutes ago',
+    hour: 'hours ago',
+    day: 'days ago',
+    month: 'months ago'
+  },
+  copyright: undefined,
+  lightbox: 'null',
+  Snackbar: undefined,
+  infinitegrid: {
+    js: 'https://cdn.jsdelivr.net/npm/@egjs/infinitegrid@4.12.0/dist/infinitegrid.min.js',
+    buttonText: 'Load More'
+  },
+  isPhotoFigcaption: false,
+  islazyloadPlugin: false,
+  isAnchor: false,
+  percent: {
+    toc: true,
+    rightside: false,
+  },
+  autoDarkmode: false
+}</script><script id="config-diff">var GLOBAL_CONFIG_SITE = {
+  title: 'MySql与Redis双写一致性方案',
+  isHighlightShrink: false,
+  isToc: true,
+  pageType: 'post'
+}</script><meta name="generator" content="Hexo 8.0.0"></head><body><div id="web_bg" style="background-image: url(/img/spider.png);"></div><div id="sidebar"><div id="menu-mask"></div><div id="sidebar-menus"><div class="avatar-img text-center"><img src="/img/dog1.png" onerror="this.onerror=null;this.src='/img/friend_404.gif'" alt="avatar"/></div><div class="site-data text-center"><a href="/archives/"><div class="headline">Articles</div><div class="length-num">4</div></a><a href="/tags/"><div class="headline">Tags</div><div class="length-num">0</div></a><a href="/categories/"><div class="headline">Categories</div><div class="length-num">0</div></a></div><div class="menus_items"><div class="menus_item"><a class="site-page" href="/"><i class="fa-fw fas fa-home"></i><span> Home</span></a></div><div class="menus_item"><a class="site-page" href="/archives/"><i class="fa-fw fas fa-archive"></i><span> Archives</span></a></div><div class="menus_item"><a class="site-page" href="/tags/"><i class="fa-fw fas fa-tags"></i><span> Tags</span></a></div><div class="menus_item"><a class="site-page" href="/categories/"><i class="fa-fw fas fa-folder-open"></i><span> Categories</span></a></div></div></div></div><div class="post" id="body-wrap"><header class="post-bg" id="page-header" style="background-image: url(/img/spider.png);"><nav id="nav"><span id="blog-info"><a class="nav-site-title" href="/"><span class="site-name">YoungDev</span></a><a class="nav-page-title" href="/"><span class="site-name">MySql与Redis双写一致性方案</span><span class="site-name"><i class="fa-solid fa-circle-arrow-left"></i><span>  Back to Home</span></span></a></span><div id="menus"><div class="menus_items"><div class="menus_item"><a class="site-page" href="/"><i class="fa-fw fas fa-home"></i><span> Home</span></a></div><div class="menus_item"><a class="site-page" href="/archives/"><i class="fa-fw fas fa-archive"></i><span> Archives</span></a></div><div class="menus_item"><a class="site-page" href="/tags/"><i class="fa-fw fas fa-tags"></i><span> Tags</span></a></div><div class="menus_item"><a class="site-page" href="/categories/"><i class="fa-fw fas fa-folder-open"></i><span> Categories</span></a></div></div><div id="toggle-menu"><span class="site-page"><i class="fas fa-bars fa-fw"></i></span></div></div></nav><div id="post-info"><h1 class="post-title">MySql与Redis双写一致性方案</h1><div id="post-meta"><div class="meta-firstline"><span class="post-meta-date"><i class="far fa-calendar-alt fa-fw post-meta-icon"></i><span class="post-meta-label">Created</span><time class="post-meta-date-created" datetime="2025-10-21T08:23:11.117Z" title="Created 2025-10-21 16:23:11">2025-10-21</time><span class="post-meta-separator">|</span><i class="fas fa-history fa-fw post-meta-icon"></i><span class="post-meta-label">Updated</span><time class="post-meta-date-updated" datetime="2025-10-22T05:19:06.548Z" title="Updated 2025-10-22 13:19:06">2025-10-22</time></span></div><div class="meta-secondline"><span class="post-meta-separator">|</span><span class="post-meta-pv-cv" id="" data-flag-title=""><i class="far fa-eye fa-fw post-meta-icon"></i><span class="post-meta-label">Post Views:</span><span id="busuanzi_value_page_pv"><i class="fa-solid fa-spinner fa-spin"></i></span></span></div></div></div></header><main class="layout" id="content-inner"><div id="post"><article class="container post-content" id="article-container"><h1 id="背景"><a href="#背景" class="headerlink" title="背景"></a>背景</h1><p>在实际开发中，经常需要使用redis做cache，提高读性能。而引入缓存后，需要注意缓存与数据库一致性的问题。</p>
+<p><img src="/img/pic1.png" alt="图片描述"> </p>
+<h1 id="CacheAside-旁路缓存"><a href="#CacheAside-旁路缓存" class="headerlink" title="CacheAside 旁路缓存"></a>CacheAside 旁路缓存</h1><p><img src="/img/pic2.png" alt="图片描述"> </p>
+<p><strong>Redis 和 Mysql 数据发生不一致的本质：</strong></p>
+<p>更新数据，设计到两个代码操作：</p>
+<ol>
+<li>更新数据库</li>
+<li>更新Redis</li>
+</ol>
+<p>发生不一致的本质：这两个操作不是原子性的，因此在并发下，多线程的执行顺序导致数据库不一致。</p>
+<p>如：</p>
+<p><strong>为什么要先更新数据库，在更新缓存</strong></p>
+<p>先更新缓存，在更新数据库的情况：</p>
+<p>线程A, 线程B都执行写操作。</p>
+<p>可能的执行顺序：</p>
+<ol>
+<li>线程A更新缓存值为A</li>
+<li>线程B更新缓存值为B</li>
+<li>线程B更新数据库B</li>
+<li>线程A更新数据库A</li>
+</ol>
+<p>此时，缓存值为B 数据库值为A 不一致。</p>
+<p><strong>为什么是删除缓存，而不是更新缓存为新值</strong></p>
+<p>线程A, 线程B都执行写操作。</p>
+<ol>
+<li>线程A更新数据库A</li>
+<li>线程B更新数据库B</li>
+<li>线程B更新缓存B</li>
+<li>线程A更新缓存A</li>
+</ol>
+<p>此时，数据库B，缓存A 不一致</p>
+<p>因此本质就是更新数据库，更新缓存这两个操作不是原子的，因此在此之间能发生线程安全问题。</p>
+<p><strong>那先更新数据库，在删除缓存，就能保证数据库一致了吗？</strong></p>
+<p>不不不，还有一种情况，那就是更新数据库后，还没删除缓存，这个时间段其他线程读缓存读到的是旧值，数据不一致。</p>
+<p><strong>但是，这种情况与上述不同的是，由于代码执行到删除就会一致，不一致的时间很短，其余的是，如果其他线程没有再发生写入，那么会一直不一致。</strong></p>
+<h1 id="与CacheAside一起使用的策略"><a href="#与CacheAside一起使用的策略" class="headerlink" title="与CacheAside一起使用的策略"></a>与CacheAside一起使用的策略</h1><p>借助其他手段，更好的保证一致性</p>
+<h2 id="延时双删"><a href="#延时双删" class="headerlink" title="延时双删"></a>延时双删</h2><p>解决痛点：</p>
+<p>我们知道生产环境一般来说都是有主从节点的，采用的是读写分离的策略（从库读，主库写），那主从同步的这一段时间里，主从数据是不一致的。</p>
+<p>知道这个背景，那当我们主线程（写的那个线程）更新完数据库（主库），删除缓存后，其他线程读数据库（从库未同步），读到的是旧值，写入缓存的也是旧值，这就发生了数据库，缓存不一致的现象！</p>
+<p>因此我们采用延时双删的策略，目的是为了允许主从同步的时间</p>
+<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br></pre></td><td class="code"><pre><span class="line">1. updateDB</span><br><span class="line">2. deleteCache</span><br><span class="line">3. 定时任务 deleteCache</span><br></pre></td></tr></table></figure>
+
+
+
+<h2 id="重试机制"><a href="#重试机制" class="headerlink" title="重试机制"></a>重试机制</h2><p>删除缓存可能会失败，因此需要设定重试机制来保证缓存删除成功。</p>
+<p>不能一直重试，会严重占用系统资源</p>
+<h2 id="异步，利用Canal监听数据库binlog，异步删除缓存"><a href="#异步，利用Canal监听数据库binlog，异步删除缓存" class="headerlink" title="异步，利用Canal监听数据库binlog，异步删除缓存"></a>异步，利用Canal监听数据库binlog，异步删除缓存</h2><p>好处：</p>
+<ol>
+<li>减少代码倾入，直接更新数据库，不用再写缓存更新的代码</li>
+<li>延时双删的时间点设置很关键，太短没用，太慢数据库不一致的时间又有点长。</li>
+<li>避免删除失败阻塞主线程</li>
+</ol>
+<figure class="highlight java"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br><span class="line">23</span><br><span class="line">24</span><br><span class="line">25</span><br><span class="line">26</span><br><span class="line">27</span><br><span class="line">28</span><br><span class="line">29</span><br><span class="line">30</span><br><span class="line">31</span><br><span class="line">32</span><br><span class="line">33</span><br><span class="line">34</span><br><span class="line">35</span><br><span class="line">36</span><br><span class="line">37</span><br><span class="line">38</span><br><span class="line">39</span><br><span class="line">40</span><br><span class="line">41</span><br><span class="line">42</span><br></pre></td><td class="code"><pre><span class="line"><span class="meta">@Service</span></span><br><span class="line"><span class="keyword">public</span> <span class="keyword">class</span> <span class="title class_">BinlogEventHandler</span> &#123;</span><br><span class="line"></span><br><span class="line">    <span class="meta">@Autowired</span></span><br><span class="line">    <span class="keyword">private</span> RocketMQTemplate rocketMQTemplate;</span><br><span class="line"></span><br><span class="line">    <span class="keyword">public</span> <span class="keyword">void</span> <span class="title function_">handleBinlogEvent</span><span class="params">(BinlogEvent binlogEvent)</span> &#123;</span><br><span class="line">        <span class="comment">// 解析binlogEvent，获取需要更新缓存的key</span></span><br><span class="line">        <span class="type">String</span> <span class="variable">cacheKey</span> <span class="operator">=</span> deriveCacheKeyFromBinlogEvent(binlogEvent);</span><br><span class="line"></span><br><span class="line">        <span class="comment">// 发送到RocketMQ</span></span><br><span class="line">        rocketMQTemplate.asyncSend(<span class="string">&quot;cacheUpdateTopic&quot;</span>, cacheKey, <span class="keyword">new</span> <span class="title class_">SendCallback</span>() &#123;</span><br><span class="line">            <span class="meta">@Override</span></span><br><span class="line">            <span class="keyword">public</span> <span class="keyword">void</span> <span class="title function_">onSuccess</span><span class="params">(SendResult sendResult)</span> &#123;</span><br><span class="line">                <span class="comment">// 发送成功处理</span></span><br><span class="line">            &#125;</span><br><span class="line"></span><br><span class="line">            <span class="meta">@Override</span></span><br><span class="line">            <span class="keyword">public</span> <span class="keyword">void</span> <span class="title function_">onException</span><span class="params">(Throwable e)</span> &#123;</span><br><span class="line">                <span class="comment">// 发送失败处理</span></span><br><span class="line">            &#125;</span><br><span class="line">        &#125;);</span><br><span class="line">    &#125;</span><br><span class="line"></span><br><span class="line">    <span class="comment">// 从binlog事件中获取缓存key的逻辑，这里仅为示意</span></span><br><span class="line">    <span class="keyword">private</span> String <span class="title function_">deriveCacheKeyFromBinlogEvent</span><span class="params">(BinlogEvent binlogEvent)</span> &#123;</span><br><span class="line">        <span class="comment">// ...</span></span><br><span class="line">    &#125;</span><br><span class="line">&#125;</span><br><span class="line"></span><br><span class="line"><span class="meta">@RocketMQMessageListener(consumerGroup = &quot;myConsumerGroup&quot;, topic = &quot;cacheUpdateTopic&quot;)</span></span><br><span class="line"><span class="keyword">public</span> <span class="keyword">class</span> <span class="title class_">CacheUpdateConsumer</span> &#123;</span><br><span class="line"></span><br><span class="line">    <span class="meta">@Autowired</span></span><br><span class="line">    <span class="keyword">private</span> StringRedisTemplate redisTemplate;</span><br><span class="line"></span><br><span class="line">    <span class="meta">@Override</span></span><br><span class="line">    <span class="keyword">public</span> <span class="keyword">void</span> <span class="title function_">onMessage</span><span class="params">(MessageExt messageExt)</span> &#123;</span><br><span class="line">        <span class="type">String</span> <span class="variable">cacheKey</span> <span class="operator">=</span> <span class="keyword">new</span> <span class="title class_">String</span>(messageExt.getBody());</span><br><span class="line">        redisTemplate.delete(cacheKey);</span><br><span class="line">    &#125;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+
+
+
+</article><div class="post-copyright"><div class="post-copyright__author"><span class="post-copyright-meta"><i class="fas fa-circle-user fa-fw"></i>Author: </span><span class="post-copyright-info"><a href="https://SfGyoung.github.io">Young</a></span></div><div class="post-copyright__type"><span class="post-copyright-meta"><i class="fas fa-square-arrow-up-right fa-fw"></i>Link: </span><span class="post-copyright-info"><a href="https://sfgyoung.github.io/2025/10/21/%E6%95%B0%E6%8D%AE%E5%BA%93%E4%B8%8E%E7%BC%93%E5%AD%98%E4%B8%80%E8%87%B4%E6%80%A7%E6%96%B9%E6%A1%88/">https://sfgyoung.github.io/2025/10/21/%E6%95%B0%E6%8D%AE%E5%BA%93%E4%B8%8E%E7%BC%93%E5%AD%98%E4%B8%80%E8%87%B4%E6%80%A7%E6%96%B9%E6%A1%88/</a></span></div><div class="post-copyright__notice"><span class="post-copyright-meta"><i class="fas fa-circle-exclamation fa-fw"></i>Copyright Notice: </span><span class="post-copyright-info">All articles on this blog are licensed under <a target="_blank" rel="noopener" href="https://creativecommons.org/licenses/by-nc-sa/4.0/">CC BY-NC-SA 4.0</a> unless otherwise stated.</span></div></div><div class="tag_share"><div class="post-share"><div class="social-share" data-image="/img/dog1.png" data-sites="facebook,x,wechat,weibo,qq"></div><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/butterfly-extsrc@1.1.6/sharejs/dist/css/share.min.css" media="print" onload="this.media='all'"><script src="https://cdn.jsdelivr.net/npm/butterfly-extsrc@1.1.6/sharejs/dist/js/social-share.min.js" defer></script></div></div><nav class="pagination-post" id="pagination"><a class="pagination-related" href="/2025/10/21/sql-run-process/" title="一条sql语句运行的全过程"><div class="cover" style="background: var(--default-bg-color)"></div><div class="info"><div class="info-1"><div class="info-item-1">Previous</div><div class="info-item-2">一条sql语句运行的全过程</div></div><div class="info-2"><div class="info-item-1">首先来看一下整个流程图，再来讲各个流程发生了什么。  总架构分为两层：  Server层负责 连接 分析和执行SQL 存储引擎层 负责数据存储与提取(实际存储的地方)  Server层连接器连接器负责建立SQL连接。 也就是我们输入用户名密码 建立连接的过程。 连接器的作用总结如下：  与客户端建立TCP三次握手连接 校验用户名和密码。 正确后，根据用户，判定权限。  缓存器缓存查询过的数据，但鸡肋，因为只要表有一条数据只要有修改，整张表缓存信息作废。 MySQL8.0 废除 解析器词法分析（确认关键词）-&gt; 语法分析（构建语法树） 举个栗子： 1select user_inform from uesr_tab  解析器会首先做词法分析，分析哪个词是关键词，哪个词不是。 如下：  紧接着做语法分析，分析语法是否有错误。 分析完成后，会构建出语法树。  执行SQL执行SQL又分为三个阶段：  预处理阶段 优化阶段 执行阶段  预处理 检查SQL语句中的表或字段是否存在 将select * 中的 * 解析为所有列  优化阶段负责确定SQL的执行方案，比如一个SQL语句有多个索引...</div></div></div></a><a class="pagination-related" href="/2025/10/21/hello-world/" title="MySql，Redis，RocketMQ 持久化的本质及蕴含的思想"><div class="cover" style="background: var(--default-bg-color)"></div><div class="info text-right"><div class="info-1"><div class="info-item-1">Next</div><div class="info-item-2">MySql，Redis，RocketMQ 持久化的本质及蕴含的思想</div></div><div class="info-2"><div class="info-item-1">背景最近复习秋招，在学习，总结各个中间件的过程中，发现其持久化机制存在一些共性的思想，可以复用到日后的一些开发设计当中。 为什么需要持久化为了提升性能，中间件一般是由内存储存数据，而内存会有数据丢失的风险，因此需要一套持久化机制来进行兜底，避免宕机，断电发生的数据丢失，是一种兜底手段。 Mysql是如何持久化的反直觉的是我们都知道Mysql的存储介质是磁盘，这里为什么还会说基于缓存呢？ 因为为了提升查询性能，mysql会设置一个基于内存的buffer pool，如mysql查询数据时，会首先在server端将请求打到引擎层，引擎层在buffer pool中查找是否存在该记录，是则直接返回。（整个过程，是没有与磁盘参与的，减少了大量I&#x2F;O操作，提升性能），这种Cache的思想在我们开发过程中也很常见。这里buffer pool具体的原理就不说了。 持久化的发生时机当mysql进行更新操作时，并不会直接访问磁盘修改对应的数据，而是将buffer pool中的数据标记为**「脏页」**，再（定时的将数据写回磁盘）。 因此，这里存在一个时隙，如果没有及时更新回磁盘，又断电了，更...</div></div></div></a></nav></div><div class="aside-content" id="aside-content"><div class="card-widget card-info text-center"><div class="avatar-img"><img src="/img/dog1.png" onerror="this.onerror=null;this.src='/img/friend_404.gif'" alt="avatar"/></div><div class="author-info-name">Young</div><div class="author-info-description">个人学习记录/技术思考/总结。</div><div class="site-data"><a href="/archives/"><div class="headline">Articles</div><div class="length-num">4</div></a><a href="/tags/"><div class="headline">Tags</div><div class="length-num">0</div></a><a href="/categories/"><div class="headline">Categories</div><div class="length-num">0</div></a></div><a id="card-info-btn" target="_blank" rel="noopener" href="https://github.com/SfGyoung"><i class="fab fa-github"></i><span>Follow Me</span></a><div class="card-info-social-icons"><a class="social-icon" href="https://github.com/SfGyoung" target="_blank" title="Github"><i class="fab fa-github" style="color: #24292e;"></i></a><a class="social-icon" href="mailto:1487208459@qq.com" target="_blank" title="Email"><i class="fas fa-envelope" style="color: #4a7dbe;"></i></a></div></div><div class="card-widget card-announcement"><div class="item-headline"><i class="fas fa-bullhorn fa-shake"></i><span>Announcement</span></div><div class="announcement_content">个人学习记录/思考/技术分享</div></div><div class="sticky_layout"><div class="card-widget" id="card-toc"><div class="item-headline"><i class="fas fa-stream"></i><span>Contents</span><span class="toc-percentage"></span></div><div class="toc-content"><ol class="toc"><li class="toc-item toc-level-1"><a class="toc-link" href="#%E8%83%8C%E6%99%AF"><span class="toc-number">1.</span> <span class="toc-text">背景</span></a></li><li class="toc-item toc-level-1"><a class="toc-link" href="#CacheAside-%E6%97%81%E8%B7%AF%E7%BC%93%E5%AD%98"><span class="toc-number">2.</span> <span class="toc-text">CacheAside 旁路缓存</span></a></li><li class="toc-item toc-level-1"><a class="toc-link" href="#%E4%B8%8ECacheAside%E4%B8%80%E8%B5%B7%E4%BD%BF%E7%94%A8%E7%9A%84%E7%AD%96%E7%95%A5"><span class="toc-number">3.</span> <span class="toc-text">与CacheAside一起使用的策略</span></a><ol class="toc-child"><li class="toc-item toc-level-2"><a class="toc-link" href="#%E5%BB%B6%E6%97%B6%E5%8F%8C%E5%88%A0"><span class="toc-number">3.1.</span> <span class="toc-text">延时双删</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#%E9%87%8D%E8%AF%95%E6%9C%BA%E5%88%B6"><span class="toc-number">3.2.</span> <span class="toc-text">重试机制</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#%E5%BC%82%E6%AD%A5%EF%BC%8C%E5%88%A9%E7%94%A8Canal%E7%9B%91%E5%90%AC%E6%95%B0%E6%8D%AE%E5%BA%93binlog%EF%BC%8C%E5%BC%82%E6%AD%A5%E5%88%A0%E9%99%A4%E7%BC%93%E5%AD%98"><span class="toc-number">3.3.</span> <span class="toc-text">异步，利用Canal监听数据库binlog，异步删除缓存</span></a></li></ol></li></ol></div></div><div class="card-widget card-recent-post"><div class="item-headline"><i class="fas fa-history"></i><span>Recent Posts</span></div><div class="aside-list"><div class="aside-list-item no-cover"><div class="content"><a class="title" href="/2025/10/21/hello-world/" title="MySql，Redis，RocketMQ 持久化的本质及蕴含的思想">MySql，Redis，RocketMQ 持久化的本质及蕴含的思想</a><time datetime="2025-10-21T08:23:11.117Z" title="Created 2025-10-21 16:23:11">2025-10-21</time></div></div><div class="aside-list-item no-cover"><div class="content"><a class="title" href="/2025/10/21/%E6%95%B0%E6%8D%AE%E5%BA%93%E4%B8%8E%E7%BC%93%E5%AD%98%E4%B8%80%E8%87%B4%E6%80%A7%E6%96%B9%E6%A1%88/" title="MySql与Redis双写一致性方案">MySql与Redis双写一致性方案</a><time datetime="2025-10-21T08:23:11.117Z" title="Created 2025-10-21 16:23:11">2025-10-21</time></div></div><div class="aside-list-item no-cover"><div class="content"><a class="title" href="/2025/10/21/sql-run-process/" title="一条sql语句运行的全过程">一条sql语句运行的全过程</a><time datetime="2025-10-21T08:23:11.117Z" title="Created 2025-10-21 16:23:11">2025-10-21</time></div></div><div class="aside-list-item no-cover"><div class="content"><a class="title" href="/2025/10/21/ai-test/" title="利用AI生成单元测试">利用AI生成单元测试</a><time datetime="2025-10-21T08:23:11.117Z" title="Created 2025-10-21 16:23:11">2025-10-21</time></div></div></div></div></div></div></main><footer id="footer" style="background-image: url(/img/spider.png);"><div class="footer-other"><div class="footer-copyright"><span class="copyright">&copy;&nbsp;2025 By Young</span><span class="framework-info"><span>Framework </span><a target="_blank" rel="noopener" href="https://hexo.io">Hexo 8.0.0</a><span class="footer-separator">|</span><span>Theme </span><a target="_blank" rel="noopener" href="https://github.com/jerryc127/hexo-theme-butterfly">Butterfly 5.5.1</a></span></div></div></footer></div><div id="rightside"><div id="rightside-config-hide"><button id="readmode" type="button" title="Reading Mode"><i class="fas fa-book-open"></i></button><button id="darkmode" type="button" title="Toggle Between Light and Dark Mode"><i class="fas fa-adjust"></i></button><button id="hide-aside-btn" type="button" title="Toggle Between Single-column and Double-column"><i class="fas fa-arrows-alt-h"></i></button></div><div id="rightside-config-show"><button id="rightside-config" type="button" title="Settings"><i class="fas fa-cog fa-spin"></i></button><button class="close" id="mobile-toc-button" type="button" title="Table of Contents"><i class="fas fa-list-ul"></i></button><button id="go-up" type="button" title="Back to Top"><span class="scroll-percent"></span><i class="fas fa-arrow-up"></i></button></div></div><div><script src="/js/utils.js?v=5.5.1"></script><script src="/js/main.js?v=5.5.1"></script><div class="js-pjax"></div><script async data-pjax src="//busuanzi.ibruce.info/busuanzi/2.3/busuanzi.pure.mini.js"></script></div></body></html>
